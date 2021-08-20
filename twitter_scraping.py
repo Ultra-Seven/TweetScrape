@@ -9,12 +9,10 @@ class Tweet:
     def add_child(self, child):
         self.children.append(child)
 
-    def __init__(self, tweet_status, parent, is_retweet):
+    def __init__(self, tweet_status, is_retweet):
         self.is_retweet = is_retweet
         self.children = []
-        self.parent = parent
-        if parent is not None:
-            parent.add_child(self)
+        self.parent = None
         self.id = tweet_status.id
         self.text = tweet_status.text
         self.user = tweet_status.user
@@ -41,11 +39,27 @@ class cascade_maker():
         tweeting user.
         '''
         results = []
-        retweets_list = self.api.retweets(tweet.id)
-        for retweet in retweets_list:
-            retweet_obj = Tweet(retweet, tweet, True)
-            results.append(retweet_obj)
-            print(retweet.user.screen_name)
+        ids = set()
+        while True:
+            retweets_list = self.api.retweets(tweet.id, count)
+            retweets_list = list(filter(lambda x: x.id not in ids, retweets_list))
+            if len(retweets_list) > 0:
+                for retweet in retweets_list:
+                    retweet_obj = Tweet(retweet, True)
+                    results.append(retweet_obj)
+                    ids.add(retweet.id)
+                # print(retweet.user.screen_name)
+            else:
+                break
+
+        # truncation = 128 - len(' retweets_of:') - len(user)  # query needs to be under 128 chars
+        # query = f'"{tweet.text[:truncation]}" retweets_of:{user}'
+        # rts = []
+        # for page in tweepy.Cursor(self.api.search, q=search_words, since=date_since).pages():
+        #     rts += page
+        #
+        # return rts
+
         return results
 
     def follows(self, user1, user2):
@@ -56,26 +70,30 @@ class cascade_maker():
         friendship = self.api.show_friendship(source_id=user1, target_id=user2)
         return friendship[0].following, friendship[1].following
 
-    def cascade_structure(self, tweets):
+
+    def cascade_structure(self, tweets, seconds_per_query=5):
         for tweet in tweets:
-            root_tweet = Tweet(tweet, None, False)
+            root_tweet = Tweet(tweet, False)
             self.root_nodes.append(root_tweet)
-            expand_nodes = [root_tweet]
-            expand_set = {root_tweet.id}
+            retweets = self.get_retweets(root_tweet, user=root_tweet.user.screen_name)
+
+            parents = [root_tweet]
             while True:
-                new_nodes = []
-                for expand_node in expand_nodes:
-                    retweets = self.get_retweets(expand_node)
-                    for retweet in retweets:
-                        retweet_id = retweet.id
-                        if retweet_id not in expand_set:
-                            new_nodes.append(retweet)
-                if len(new_nodes) == 0:
+                if len(parents) == 0 or len([x for x in retweets if x.parent == None]) == 0:
                     break
-                else:
-                    expand_nodes = new_nodes
+                parent = parents.pop()
+                for i, rid in enumerate(retweets):
+                    if rid.parent != None:
+                        continue
+                    if self.follows(rid.user.id, parent.user.id)[0]:
+                        child_tweet = retweets[i]
+                        child_tweet.parent = parent
+                        parent.add_child(child_tweet)
+                        parents.append(child_tweet)
+                    sleep(seconds_per_query)
+                parents = sorted(parents, key=lambda x: int(x.user.followers_count))
+
             self.visualize()
-            print("")
 
     def visualize(self):
         def to_label(node):
@@ -157,7 +175,9 @@ if __name__ == '__main__':
     # Again use twint to get their follower networks - and thus we can construct a cascade with very minimal number of requests
     
     cm = cascade_maker('./twitter_keys.yaml')
-    tweet = cm.get_tweet(1265889240300257280)
+    # for tweet in tweepy.Cursor(cm.api.search, q='#covid', result_type='popular').items(5):
+    #     print(tweet)
+    tweet = cm.get_tweet(849813577770778624)
     cm.cascade_structure([tweet])
     print("here")
     
